@@ -1,0 +1,260 @@
+
+library(dplyr)
+library(caret)
+set.seed(123)
+
+#Funçao para análise exploratória
+analise_exploratoria <- function(x,nome = 'Analise Exploratoria',TARGET=TARGET ){
+  pdf(paste(nome,'',".pdf",sep=""))
+  par(mfrow=c(3,4))
+  percentual_by_ngroups<-function(x,qtde_group=9){
+    #x[,1]=variavel
+    #x[,1]=valor do target
+    vlr_min<-min(x[,1],na.rm=T)
+    vlr_max<-max(x[,1],na.rm=T)
+    intervalo<-(vlr_max-vlr_min)/qtde_group
+    df<-data.frame(variavel=0, percentual =0, n =0, LI=0, LS=0)
+    for(i in 1:qtde_group){
+      inicio<-vlr_min+intervalo*(i-1)
+      fim<-vlr_min+intervalo*(i)
+      df[i,1]<-fim
+      if(qtde_group!=i){
+        df[i,2]<-sum(x[x[,1]<fim & x[,1]>=inicio,2],na.rm=T)
+        df[i,3]<-NROW(x[x[,1]<fim & x[,1]>=inicio,2])
+      }else{
+        df[i,2]<-sum(x[x[,1]<=fim & x[,1]>=inicio,2],na.rm=T)
+        df[i,3]<-NROW(x[x[,1]<=fim & x[,1]>=inicio,2])
+      }
+    }
+    df[,2]<-df[,2]/df[,3]
+    df[,4]<-df[,2] - 1.96*df[,2]*(1-df[,2])/df[,3]
+    df[,5]<-df[,2] + 1.96*df[,2]*(1-df[,2])/df[,3]
+    names(df)[1]<-colnames(x)[1]
+    return(df)
+  }
+  
+  
+  id_numero <- colnames(x[,(sapply( x, class ) == 'numeric' | sapply( x, class ) == 'integer')])
+  for (y in id_numero){
+    plot(density(x[,y],na.rm=TRUE),y,col="black")
+    lines(density(x[,y][ x[,TARGET]==0],na.rm=TRUE),col="blue")
+    lines(density(x[,y][ x[,TARGET]==1],na.rm=TRUE),col="red")
+    temp<-x[,c(y,TARGET)]
+    a<-percentual_by_ngroups(temp)
+    plot(x=a[,1],y=a[,2],main=y,type="o",ylim=c(0,max(c(a[,2],0.5),na.rm=T)),xlab=y, ylab="",col="red")
+    hist(x[,y], main=y )
+    hist(x[,y][ x[,TARGET]==1],col='Red', add = TRUE)
+    boxplot(x[,y][x[,TARGET]==0],
+            x[,y][x[,TARGET]==1],
+            names=c("0","1"), col = c("blue", "red"),main=y,horizontal=TRUE) #,outline=FALSE
+    
+  }
+  dev.off()
+}
+nfold_check<-function(y_test,y_model_prob,infoextra=c(),infoextra2=c()){
+  df<-data.frame(ytest =y_test,yprobpred=y_model_prob )
+  df<-df[sample(nrow(df)),]	
+  print(infoextra)
+  print(infoextra2)
+  print("------------------------------------------------------------------")
+  
+  
+  set.seed(123)
+  p<-2.5
+  n1<-1
+  tabela_resumo <- data.frame(P=0,T0M0=0,T1M1=0,T1M0=0,T0M1=0)
+  while (p<=99){
+    tabela_resumo[n1,"P"]<-p/100
+    tabela_resumo[n1,"T1M1"]<-NROW(df[df$yprobpred>=p/100 & df$ytest==1,])
+    tabela_resumo[n1,"T1M0"]<-NROW(df[df$yprobpred<p/100 & df$ytest==1,])
+    tabela_resumo[n1,"T0M0"]<-NROW(df[df$yprobpred<p/100 & df$ytest==0,])
+    tabela_resumo[n1,"T0M1"]<-NROW(df[df$yprobpred>=p/100 & df$ytest==0,])
+    n1<-n1+1
+    p<-p+1.25
+  }
+  
+  tabela_resumo$recall<- tabela_resumo$T1M1/(tabela_resumo$T1M1+tabela_resumo$T1M0)
+  tabela_resumo$precision<- tabela_resumo$T1M1/(tabela_resumo$T1M1+tabela_resumo$T0M1)
+  tabela_resumo$F1<- 2*(tabela_resumo$precision*tabela_resumo$recall)/(tabela_resumo$recall+tabela_resumo$precision)
+  tabela_resumo$acuracia<-(tabela_resumo$T1M1+tabela_resumo$T0M0)/(tabela_resumo$T1M1+tabela_resumo$T0M0+tabela_resumo$T1M0+tabela_resumo$T0M1)
+  tabela_resumo$abserrordif<-abs(tabela_resumo$T0M1-tabela_resumo$T1M0)
+  tabela_resumo$MCC<-(tabela_resumo$T1M1*tabela_resumo$T0M0 - tabela_resumo$T0M1*tabela_resumo$T1M0)/
+    sqrt((tabela_resumo$T1M1+tabela_resumo$T0M1)*(tabela_resumo$T1M1+tabela_resumo$T1M0)*
+           (tabela_resumo$T0M0+tabela_resumo$T0M1)*(tabela_resumo$T0M0+tabela_resumo$T1M0))
+  
+  #coloca NA em dados infinitos
+  tabela_resumo[mapply(is.infinite, tabela_resumo)] <- 0
+  
+  tabela_resumo[,c(1,9)]
+  #points(tabela_resumo[,c('P','recall')],col="green", xlim=c(0,1), ylim=c(0,1))
+  #points(tabela_resumo[,c('P','F1')],col="red", xlim=c(0,1), ylim=c(0,1))
+  #points(tabela_resumo[,c('P','precision')],col="blue", xlim=c(0,1), ylim=c(0,1))
+  #points(tabela_resumo[,c('P','acuracia')],col="yellow", xlim=c(0,1), ylim=c(0,1))
+  
+  plot(x=tabela_resumo[,'P'], y=tabela_resumo[,'acuracia'], main = "acuracia",
+       xlab = "Cutoff", ylab = "%", xlim = c(0,1), ylim = c(0,1),pch = 19, frame = FALSE,col="green")
+  
+  cutoff_indicado<-mean(tabela_resumo[tabela_resumo[,8]==max(tabela_resumo[,8],na.rm=TRUE),1])
+  cutoff_indicado1<-mean(tabela_resumo[tabela_resumo[,9]==max(tabela_resumo[,9],na.rm=TRUE),1])
+  cutoff_indicado2<-mean(tabela_resumo[tabela_resumo[,10]==min(tabela_resumo[,10],na.rm=TRUE),1])
+  cutoff_indicado3<-mean(tabela_resumo[tabela_resumo[,11]==max(tabela_resumo[,11],na.rm=TRUE),1])
+  
+  if(is.na(cutoff_indicado)){cutoff_indicado<-0}
+  if(is.na(cutoff_indicado1)){cutoff_indicado1<-0}
+  if(is.na(cutoff_indicado2)){cutoff_indicado2<-0}
+  if(is.na(cutoff_indicado3)){cutoff_indicado3<-0}
+  
+  
+  for(cutoff_uso in c(cutoff_indicado1)){
+    
+    if(cutoff_indicado==cutoff_uso){
+      print(paste('Cutoff indicado (F1 Máximo): ',cutoff_uso))
+    }else{
+      if(cutoff_indicado1==cutoff_uso){
+        print(paste('Cutoff indicado (Acurácia Máxima): ',cutoff_uso))
+      }else{
+        if(cutoff_indicado2==cutoff_uso){
+          print(paste('Cutoff indicado (Balanceado): ',cutoff_uso))
+        }else{
+          if(cutoff_indicado3==cutoff_uso){
+            print(paste('Cutoff indicado (MCC): ',cutoff_uso))
+          }
+        }
+      }
+    }
+    
+    Union_table<-data.frame(TARGET =df$ytest,PRED_DEF=ifelse(df$yprobpred>=cutoff_uso,1,0) )
+    print(prop.table(table(Union_table[,c('TARGET','PRED_DEF')]))*100)
+    print(table(Union_table[,c('TARGET','PRED_DEF')]))
+    
+    tabela_resumo <- data.frame(n=0,T0M0=0,T1M1=0,T1M0=0,T0M1=0)
+    folds <- cut(seq(1,nrow(df)),breaks=10,labels=FALSE)	
+    #Perform 10 fold cross validation
+    for(i in 1:10){
+      #Segment your data by fold using the which() function 
+      testIndexes <- which(folds==i,arr.ind=TRUE)
+      df_temp<-df[testIndexes,]
+      
+      tabela_resumo[i,"n"]<-i
+      tabela_resumo[i,"T1M1"]<-NROW(df_temp[df_temp$yprobpred>=cutoff_uso & df_temp$ytest==1,])
+      tabela_resumo[i,"T1M0"]<-NROW(df_temp[df_temp$yprobpred<cutoff_uso & df_temp$ytest==1,])
+      tabela_resumo[i,"T0M0"]<-NROW(df_temp[df_temp$yprobpred<cutoff_uso & df_temp$ytest==0,])
+      tabela_resumo[i,"T0M1"]<-NROW(df_temp[df_temp$yprobpred>=cutoff_uso & df_temp$ytest==0,])
+    }
+    
+    tabela_resumo$recall<- tabela_resumo$T1M1/(tabela_resumo$T1M1+tabela_resumo$T1M0)
+    tabela_resumo$precision<- tabela_resumo$T1M1/(tabela_resumo$T1M1+tabela_resumo$T0M1)
+    tabela_resumo$F1<- 2*(tabela_resumo$precision*tabela_resumo$recall)/(tabela_resumo$recall+tabela_resumo$precision)
+    tabela_resumo$Acuracia<-(tabela_resumo$T1M1+tabela_resumo$T0M0)/(tabela_resumo$T1M1+tabela_resumo$T0M0+tabela_resumo$T1M0+tabela_resumo$T0M1)
+    tabela_resumo$MCC<-(tabela_resumo$T1M1*tabela_resumo$T0M0 - tabela_resumo$T0M1*tabela_resumo$T1M0)/
+      sqrt((tabela_resumo$T1M1+tabela_resumo$T0M1)*(tabela_resumo$T1M1+tabela_resumo$T1M0)*
+             (tabela_resumo$T0M0+tabela_resumo$T0M1)*(tabela_resumo$T0M0+tabela_resumo$T1M0))
+    tabela_resumo<-tabela_resumo[,c("n","Acuracia","F1","recall","precision","MCC")]
+    
+    tabela_resumo[11,1]<-'Mean'
+    tabela_resumo[11,2]<-mean(tabela_resumo[1:10,2],na.rm=TRUE)
+    tabela_resumo[11,3]<-mean(tabela_resumo[1:10,3],na.rm=TRUE)
+    tabela_resumo[11,4]<-mean(tabela_resumo[1:10,4],na.rm=TRUE)
+    tabela_resumo[11,5]<-mean(tabela_resumo[1:10,5],na.rm=TRUE)
+    tabela_resumo[11,6]<-mean(tabela_resumo[1:10,6],na.rm=TRUE)
+    tabela_resumo[12,1]<-'sd'
+    tabela_resumo[12,2]<-sd(tabela_resumo[1:10,2],na.rm=TRUE)
+    tabela_resumo[12,3]<-sd(tabela_resumo[1:10,3],na.rm=TRUE)
+    tabela_resumo[12,4]<-sd(tabela_resumo[1:10,4],na.rm=TRUE)
+    tabela_resumo[12,5]<-sd(tabela_resumo[1:10,5],na.rm=TRUE)
+    tabela_resumo[12,6]<-sd(tabela_resumo[1:10,6],na.rm=TRUE)
+    print(tabela_resumo[11:12,])
+    print("------------------------------------------------------------------")
+  }
+  
+}
+
+#Carregando a base dados
+dataset <- read.table(file = 'D:/diabetes.csv', header = TRUE, sep=',',dec = ".", stringsAsFactors = FALSE)
+
+#Convertendo tudo em número float
+dataset<-data.frame(lapply(dataset, function(x) as.numeric(x)))
+
+#Definindo a target
+TARGET=c('Outcome')
+
+#Salvar pdf dos gráficos
+analise_exploratoria(dataset,TARGET=TARGET, nome='pre_outliers')
+#Identificado outliers BloodPressure=0; BMI=0; Glucose=0
+
+#Colocando NA onde era Zero
+dataset[dataset[,'BloodPressure']<=0,'BloodPressure']<-NA
+dataset[dataset[,'BMI']<=0,'BMI']<-NA
+dataset[dataset[,'Glucose']<=0,'Glucose']<-NA
+
+#Conhecendo a relacao com e sem diabetes
+cbind(freq=table(dataset[,TARGET]), perc=prop.table(table(dataset[,TARGET]))*100)
+
+#Retira amostra para teste (25%)
+random_splits<-runif(nrow(dataset))
+test_set<-dataset[random_splits<=0.25,]
+dataset<-dataset[random_splits>0.25,]
+
+#Quantas linhas nulas no dataset
+sum(rowSums(is.na(dataset)))
+
+#Descobrindo as colunas com NA e inserindo a média conforme a target da linha
+for(colunas in colnames(dataset[, colSums(is.na(dataset)) > 0 ])){
+  dataset[,colunas][is.na(dataset[,colunas]) & dataset[,TARGET]==0] <-mean(dataset[dataset[,TARGET]==0,colunas],na.rm=T)
+  dataset[,colunas][is.na(dataset[,colunas]) & dataset[,TARGET]==1] <-mean(dataset[dataset[,TARGET]==1,colunas],na.rm=T)}
+
+#Quantas linhas nulas no dataset
+sum(rowSums(is.na(dataset)))
+
+#seleciona apenas dados numéricos como variáveis úteis de treino
+TRAIN_VECTOR<-rownames(data.frame(which(sapply( dataset, class ) == 'numeric' )))
+TRAIN_VECTOR<-setdiff(TRAIN_VECTOR,TARGET)
+
+#Identificação e eliminação de multicolinearidade se houver, ponto de corte de 0.7
+correlationmatrix = cor(dataset[,setdiff(TRAIN_VECTOR,TARGET)])
+highlyCorrelated <- findCorrelation(as.matrix(correlationmatrix), cutoff=0.7,names=TRUE)
+TRAIN_VECTOR<-setdiff(TRAIN_VECTOR,highlyCorrelated)
+
+#Recursive Feature Elimination no random forest
+results_rfe <- rfe(x=dataset[,TRAIN_VECTOR] ,y=as.factor(dataset[,TARGET]),sizes=seq(1:length(TRAIN_VECTOR)),
+                   metric = "Accuracy", maximize = TRUE,rfeControl = rfeControl(functions = rfFuncs, method = 'cv', number=5))
+TRAIN_VECTOR <-predictors(results_rfe)
+
+# k-fold cross validation
+folds=3
+repeats=2
+PP <- c('center', 'scale')
+METRIC<-'Accuracy'
+Y <- factor(ifelse(dataset[,TARGET]==1, 'Y', 'N'))
+
+trainControl <- trainControl(method='cv', number=folds, returnData=TRUE,                           
+                             savePredictions=TRUE, verboseIter=TRUE, search='random',
+                             index=createMultiFolds(Y, k=folds, times=repeats))
+
+model1 <- train(x=dataset[,TRAIN_VECTOR], Y, method='glm', trControl=trainControl, metric = METRIC)
+model2 <- train(x=dataset[,TRAIN_VECTOR], Y, method='rf', trControl=trainControl, metric = METRIC)
+model3 <- train(x=dataset[,TRAIN_VECTOR], Y, method='nnet', trControl=trainControl,metric = METRIC,preProcess=PP, importance = TRUE)
+model4 <- train(x=dataset[,TRAIN_VECTOR], Y, method='xgbTree', trControl=trainControl, metric = METRIC,preProcess=PP)
+model5 <- train(x=dataset[,TRAIN_VECTOR], Y, method='gbm', trControl=trainControl, metric = METRIC,preProcess=PP)
+model6 <- train(x=dataset[,TRAIN_VECTOR], Y, method='C5.0Tree', trControl=trainControl, metric = METRIC) 
+model7 <- train(x=dataset[,TRAIN_VECTOR], Y, method='naive_bayes', trControl=trainControl, metric = METRIC,preProcess=PP)
+
+
+#Uma lista de todos os modelos
+all.models <- list(model1, model2, model3, model4, model5, model6 ,model7)
+names(all.models) <- sapply(all.models, function(x) x$method)
+sort(sapply(all.models, function(x) min(x$results$Accuracy)))
+
+results <- resamples(all.models)
+scales <- list(x=list(relation="free"), y=list(relation="free"))
+Relevancia <-bwplot(results, scales=scales)
+pdf(paste('Comparacao Modelos',".pdf",sep=""))
+Relevancia
+dev.off()
+
+#Escolhe o modelo, por exemplo o random forest
+Modelo<-model2
+y_pred = predict(Modelo, newdata = test_set[complete.cases(test_set[,TRAIN_VECTOR]),],type="prob")
+nfold_check(test_set[complete.cases(test_set[,TRAIN_VECTOR]),TARGET],y_pred$Y,infoextra = Modelo$method)
+
+#É possível verificar que se for utilizado um ponto de corte de 0.45, a acurácia obtida pode ser de 0.78333
