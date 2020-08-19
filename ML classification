@@ -169,44 +169,44 @@ nfold_check<-function(y_test,y_model_prob,infoextra=c(),infoextra2=c()){
   
 }
 
-#Carregando a base dados
+#Carregando a base dados-----------------------------------
 dataset <- read.table(file = 'D:/diabetes.csv', header = TRUE, sep=',',dec = ".", stringsAsFactors = FALSE)
 
-#Convertendo tudo em número float
+#Convertendo tudo em número float-----------------------------------
 dataset<-data.frame(lapply(dataset, function(x) as.numeric(x)))
 
-#Definindo a target
+#Definindo a target-----------------------------------
 TARGET=c('Outcome')
 
 #Salvar pdf dos gráficos
 analise_exploratoria(dataset,TARGET=TARGET, nome='pre_outliers')
 #Identificado outliers BloodPressure=0; BMI=0; Glucose=0
 
-#Colocando NA onde era Zero
+#Colocando NA onde era Zero-----------------------------------
 dataset[dataset[,'BloodPressure']<=0,'BloodPressure']<-NA
 dataset[dataset[,'BMI']<=0,'BMI']<-NA
 dataset[dataset[,'Glucose']<=0,'Glucose']<-NA
 
-#Conhecendo a relacao com e sem diabetes
+#Conhecendo a relacao com e sem diabetes-----------------------------------
 cbind(freq=table(dataset[,TARGET]), perc=prop.table(table(dataset[,TARGET]))*100)
 
-#Retira amostra para teste (25%)
+#Retira amostra para teste (25%)-----------------------------------
 random_splits<-runif(nrow(dataset))
 test_set<-dataset[random_splits<=0.25,]
 dataset<-dataset[random_splits>0.25,]
 
-#Quantas linhas nulas no dataset
+#Quantas linhas nulas no dataset-----------------------------------
 sum(rowSums(is.na(dataset)))
 
-#Descobrindo as colunas com NA e inserindo a média conforme a target da linha
+#Descobrindo as colunas com NA e inserindo a média conforme a target da linha-----------------------------------
 for(colunas in colnames(dataset[, colSums(is.na(dataset)) > 0 ])){
   dataset[,colunas][is.na(dataset[,colunas]) & dataset[,TARGET]==0] <-mean(dataset[dataset[,TARGET]==0,colunas],na.rm=T)
   dataset[,colunas][is.na(dataset[,colunas]) & dataset[,TARGET]==1] <-mean(dataset[dataset[,TARGET]==1,colunas],na.rm=T)}
 
-#Quantas linhas nulas no dataset
+#Quantas linhas nulas no dataset-----------------------------------
 sum(rowSums(is.na(dataset)))
 
-#seleciona apenas dados numéricos como variáveis úteis de treino
+#seleciona apenas dados numéricos como variáveis úteis de treino-----------------------------------
 TRAIN_VECTOR<-rownames(data.frame(which(sapply( dataset, class ) == 'numeric' )))
 TRAIN_VECTOR<-setdiff(TRAIN_VECTOR,TARGET)
 
@@ -215,35 +215,39 @@ correlationmatrix = cor(dataset[,setdiff(TRAIN_VECTOR,TARGET)])
 highlyCorrelated <- findCorrelation(as.matrix(correlationmatrix), cutoff=0.7,names=TRUE)
 TRAIN_VECTOR<-setdiff(TRAIN_VECTOR,highlyCorrelated)
 
-#Recursive Feature Elimination no random forest
+
+#Recursive Feature Elimination no random forest-----------------------------------
 results_rfe <- rfe(x=dataset[,TRAIN_VECTOR] ,y=as.factor(dataset[,TARGET]),sizes=seq(1:length(TRAIN_VECTOR)),
                    metric = "Accuracy", maximize = TRUE,rfeControl = rfeControl(functions = rfFuncs, method = 'cv', number=5))
-TRAIN_VECTOR <-predictors(results_rfe)
+TRAIN_VECTOR_RF <-predictors(results_rfe)
 
-# k-fold cross validation
-folds=3
-repeats=2
-PP <- c('center', 'scale')
-METRIC<-'Accuracy'
+#Recursive Feature Elimination - GLM-----------------------------------
+results_rfe <- rfe(x=dataset[,TRAIN_VECTOR] ,y=as.factor(dataset[,TARGET]),preProcess=c('center','scale'),metric = "Accuracy",
+                   sizes=seq(1:length(TRAIN_VECTOR)),rfeControl = rfeControl(functions=caretFuncs, method = 'cv', number=5),method = 'glm',family='binomial')
+TRAIN_VECTOR_GLM <-predictors(results_rfe)
+
+#Recursive Feature Elimination no naive_bayes-----------------------------------
+results_rfe <- rfe(x=dataset[,TRAIN_VECTOR] ,y=factor(ifelse(dataset[,TARGET]==1, 'Y', 'N')),preProcess=c('center','scale'), sizes=seq(1:length(TRAIN_VECTOR)),
+                     metric = "Accuracy", maximize = TRUE, rfeControl = rfeControl(method = "cv",number = 5,functions = caretFuncs),
+                     trControl = trainControl(method = "cv",classProbs = TRUE), method = 'naive_bayes')
+TRAIN_VECTOR_NB <-c(TRAIN_VECTOR_TEMP,predictors(results_rfe))
+
+
+# k-fold cross validation-----------------------------------
 Y <- factor(ifelse(dataset[,TARGET]==1, 'Y', 'N'))
-
 trainControl <- trainControl(method='cv', number=folds, returnData=TRUE,                           
                              savePredictions=TRUE, verboseIter=TRUE, search='random',
-                             index=createMultiFolds(Y, k=folds, times=repeats))
+                             index=createMultiFolds(Y, k=5, times=2))
 
-model1 <- train(x=dataset[,TRAIN_VECTOR], Y, method='glm', trControl=trainControl, metric = METRIC)
-model2 <- train(x=dataset[,TRAIN_VECTOR], Y, method='rf', trControl=trainControl, metric = METRIC)
-model3 <- train(x=dataset[,TRAIN_VECTOR], Y, method='nnet', trControl=trainControl,metric = METRIC,preProcess=PP, importance = TRUE)
-model4 <- train(x=dataset[,TRAIN_VECTOR], Y, method='xgbTree', trControl=trainControl, metric = METRIC,preProcess=PP)
-model5 <- train(x=dataset[,TRAIN_VECTOR], Y, method='gbm', trControl=trainControl, metric = METRIC,preProcess=PP)
-model6 <- train(x=dataset[,TRAIN_VECTOR], Y, method='C5.0Tree', trControl=trainControl, metric = METRIC) 
-model7 <- train(x=dataset[,TRAIN_VECTOR], Y, method='naive_bayes', trControl=trainControl, metric = METRIC,preProcess=PP)
+model1 <- train(x=dataset[,TRAIN_VECTOR_GLM], Y, method='glm', trControl=trainControl, metric = 'Accuracy', family='binomial',preProcess= c('center', 'scale'))
+model2 <- train(x=dataset[,TRAIN_VECTOR_RF], Y, method='rf', trControl=trainControl, metric = 'Accuracy',preProcess= c('center', 'scale'))
+model3 <- train(x=dataset[,TRAIN_VECTOR_NB], Y, method='naive_bayes', trControl=trainControl, metric = 'Accuracy',preProcess= c('center', 'scale'))
 
 
-#Uma lista de todos os modelos
-all.models <- list(model1, model2, model3, model4, model5, model6 ,model7)
+#Faz uma lista de todos os modelos-----------------------------------
+all.models <- list(model1, model2, model3)
 names(all.models) <- sapply(all.models, function(x) x$method)
-sort(sapply(all.models, function(x) min(x$results$Accuracy)))
+sort(sapply(all.models, function(x) mean(x$results$Accuracy)))
 
 results <- resamples(all.models)
 scales <- list(x=list(relation="free"), y=list(relation="free"))
@@ -252,8 +256,8 @@ pdf(paste('Comparacao Modelos',".pdf",sep=""))
 Relevancia
 dev.off()
 
-#Escolhe o modelo, por exemplo o random forest
-Modelo<-model2
+#Escolhe o modelo, por exemplo o GLM-----------------------------------
+Modelo<-model1
 y_pred = predict(Modelo, newdata = test_set[complete.cases(test_set[,TRAIN_VECTOR]),],type="prob")
 nfold_check(test_set[complete.cases(test_set[,TRAIN_VECTOR]),TARGET],y_pred$Y,infoextra = Modelo$method)
 
