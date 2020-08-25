@@ -1,3 +1,12 @@
+library(mise)
+print('teste')
+mise()
+plot('x')
+gc()
+rm(list = ls())
+options(scipen=999)#Não utilizar notação cientifica
+options(digits=5) 
+
 
 library(dplyr)
 library(caret)
@@ -175,6 +184,7 @@ dataset <- read.table(file = 'D:/diabetes.csv', header = TRUE, sep=',',dec = "."
 #Convertendo tudo em número float-----------------------------------
 dataset<-data.frame(lapply(dataset, function(x) as.numeric(x)))
 
+
 #Definindo a target-----------------------------------
 TARGET=c('Outcome')
 
@@ -216,6 +226,111 @@ highlyCorrelated <- findCorrelation(as.matrix(correlationmatrix), cutoff=0.7,nam
 TRAIN_VECTOR<-setdiff(TRAIN_VECTOR,highlyCorrelated)
 
 
+
+#----- Selecao por algoritmo genético-------
+exec_model_return_result<-function(DATA,TESTE,TARGET,colunasX,mdl='rl'){
+  
+  vdata<-DATA[complete.cases(DATA[,colunasX]),,drop=F]
+  vdata[,TARGET] <- factor(ifelse(vdata[,TARGET]==1, 'Y', 'N'))
+  vteste<-TESTE[complete.cases(TESTE[,colunasX]),,drop=F]
+  
+  if(mdl=='nb'){
+    require(e1071)
+    modelo <- naiveBayes(as.formula(paste(TARGET, "~", paste(colunasX, collapse="+"))), data=vdata)
+    default_pred<- predict(modelo, vteste, type="raw")
+    acc<-sum(ifelse(vteste[,TARGET]==ifelse(default_pred[,'Y']>0.5,1,0),1,0))/NROW(vteste)}  
+
+  if(mdl=='rl'){
+    modelo <- glm(formula=as.formula(paste(TARGET, "~", paste(colunasX, collapse="+"))), data=vdata, family=binomial(link="logit"))
+    default_pred<- ifelse(predict(modelo, vteste, type="response")>0.5,1,0)
+    acc<-sum(ifelse(vteste[,TARGET]==default_pred,1,0))/NROW(vteste)} 
+
+  if(mdl=='rf'){
+    require(randomForest)
+    modelo <- randomForest(formula=as.formula(paste(TARGET, "~", paste(colunasX, collapse="+"))), data=vdata, ntree = 250,keep.forest=TRUE)
+    default_pred<-predict(modelo, vteste,type="prob")
+    acc<-sum(ifelse(vteste[,TARGET]==ifelse(default_pred[,'Y']>0.5,1,0),1,0))/NROW(vteste)}  
+
+  return(acc)
+}
+GA_feature_selection<-function(N_indivíduos=100,N_geracoes=5,mutacao=0.25,dataset,TESTE,TARGET=TARGET){
+  
+  #cria um dataframe com n indivíduos preenchidos com números aleatórios entre 0 e 1 a partir dos nomes de um dataframe
+  df_GA<-unique(as.data.frame(matrix(ifelse(runif(length(setdiff(names(dataset),TARGET))*N_indivíduos)<0.5,1,0), ncol=length(setdiff(names(dataset),TARGET)),dimnames = list(NULL,setdiff(names(dataset),TARGET)))))
+  #linhas onde existam elementos
+  df_GA<-df_GA[rowSums(df_GA)>0,]
+  
+  #convertendo a matriz em feature select aleatório
+  acuracia_temp<-c()
+  for(i in 1:NROW(df_GA)){
+    INDIVIDUO_GA<-colnames(df_GA[,colSums(df_GA[i,])>0,drop=F])
+    result_temp <- exec_model_return_result(DATA=dataset,TESTE=TESTE, TARGET=TARGET,colunasX=INDIVIDUO_GA)
+    acuracia_temp<-c(acuracia_temp,result_temp)}
+  
+  #Selecionando os melhores 20% dos indivíduos
+  df_GA$acuracia<-acuracia_temp
+  df_GA<-df_GA[order(-df_GA$acuracia),]
+  df_GA<-df_GA[df_GA[,'acuracia']>=quantile(df_GA[,'acuracia'],0.80,na.rm = T),]
+  
+  print(df_GA[1:5,],row.names = FALSE)
+  df_GA[,'acuracia']<-NULL
+  thebest_random<-df_GA[1,]
+  
+  for(j in 1:N_geracoes){ #N gerações...
+    acuracia_temp<-c()
+    df_GA[,'acuracia']<-NULL
+    #Cruzamento dos indivíduos e mutacao
+    for(i in 1:round(N_indivíduos/2,0)){
+      individuo1<-df_GA[sample(NROW(df_GA),1),]
+      individuo2<-df_GA[sample(NROW(df_GA),1),]
+      filho_temp1<-cbind(individuo1[,1:round(length(individuo1)/2,0)],individuo2[,(round(length(individuo2)/2,0)+1):length(individuo2)])
+      filho_temp2<-cbind(individuo2[,1:round(length(individuo2)/2,0)],individuo1[,(round(length(individuo1)/2,0)+1):length(individuo1)])
+      
+      if(runif(1)<=mutacao){ #mutacão filho 1 em % dos casos
+        coluna_mutada<-names(sample(filho_temp1,1))
+        filho_temp1[,coluna_mutada]<-ifelse(filho_temp1[,coluna_mutada]==1,0,1)}
+      
+      if(runif(1)<=mutacao){ #mutacão filho 2 em % dos casos
+        coluna_mutada<-names(sample(filho_temp2,1))
+        filho_temp2[,coluna_mutada]<-ifelse(filho_temp2[,coluna_mutada]==1,0,1)}
+      
+      filho_temp<-rbind(filho_temp1,filho_temp2)
+      if(exists("filho")){
+        filho<-unique(rbind(filho,filho_temp))
+        filho<-unique(rbind(filho,thebest_random))
+      }else{
+        filho<-filho_temp}}
+    
+    rm('df_GA')
+    df_GA<-filho
+    rm('filho')
+    #linhas onde existam elementos
+    df_GA<-df_GA[rowSums(df_GA)>0,]
+    #convertendo a matriz em feature select aleatório
+    acuracia_temp<-c()
+    for(i in 1:NROW(df_GA)){
+      INDIVIDUO_GA<-colnames(df_GA[,colSums(df_GA[i,])>0,drop=F])
+      result_temp <- exec_model_return_result(DATA=dataset,TESTE=TESTE, TARGET=TARGET,colunasX=INDIVIDUO_GA)
+      acuracia_temp<-c(acuracia_temp,result_temp)}
+    
+    #Selecionando os melhores 10% dos indivíduos
+    df_GA$acuracia<-acuracia_temp
+    df_GA<-df_GA[order(-df_GA$acuracia),]
+    df_GA<-df_GA[df_GA[,'acuracia']>=quantile(df_GA[,'acuracia'],0.90,na.rm = T),]
+    
+    if(NROW(df_GA)<=5){break}
+  }
+  
+  print(df_GA,row.names = FALSE)
+  df_GA<-setdiff(colnames(df_GA[,colSums(df_GA[1,])>0,drop=F]),'acuracia')
+  return(df_GA)
+}
+
+GA_feature<-GA_feature_selection(dataset=dataset,TESTE=test_set,TARGET=TARGET)
+ 
+#-------------------------------------------
+
+
 #Recursive Feature Elimination no random forest-----------------------------------
 results_rfe <- rfe(x=dataset[,TRAIN_VECTOR] ,y=as.factor(dataset[,TARGET]),sizes=seq(1:length(TRAIN_VECTOR)),
                    metric = "Accuracy", maximize = TRUE,rfeControl = rfeControl(functions = rfFuncs, method = 'cv', number=5))
@@ -239,10 +354,13 @@ trainControl <- trainControl(method='cv', number=folds, returnData=TRUE,
                              savePredictions=TRUE, verboseIter=TRUE, search='random',
                              index=createMultiFolds(Y, k=5, times=2))
 
-model1 <- train(x=dataset[,TRAIN_VECTOR_GLM], Y, method='glm', trControl=trainControl, metric = 'Accuracy', family='binomial',preProcess= c('center', 'scale'))
+TRAIN_VECTOR_GLM<-setdiff(TRAIN_VECTOR_GLM,c('Insulin','BloodPressure'))
+
+model1 <- train(x=dataset[,TRAIN_VECTOR_GLM], Y, method='glm', trControl=trainControl, metric = 'Accuracy', family='binomial')
 model2 <- train(x=dataset[,TRAIN_VECTOR_RF], Y, method='rf', trControl=trainControl, metric = 'Accuracy',preProcess= c('center', 'scale'))
 model3 <- train(x=dataset[,TRAIN_VECTOR_NB], Y, method='naive_bayes', trControl=trainControl, metric = 'Accuracy',preProcess= c('center', 'scale'))
 
+summary(model1)
 
 #Faz uma lista de todos os modelos-----------------------------------
 all.models <- list(model1, model2, model3)
@@ -255,6 +373,13 @@ Relevancia <-bwplot(results, scales=scales)
 pdf(paste('Comparacao Modelos',".pdf",sep=""))
 Relevancia
 dev.off()
+
+pdf(paste('Relatório',".pdf",sep=""))
+plot(Relevancia)
+plot(varImp(model1),main=model1$modelInfo$label)
+plot(varImp(model2),main=model2$modelInfo$label)
+dev.off()
+
 
 #Escolhe o modelo, por exemplo o GLM-----------------------------------
 Modelo<-model1
